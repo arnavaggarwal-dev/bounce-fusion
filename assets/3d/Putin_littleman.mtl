@@ -1,0 +1,16 @@
+newmtl Putin_littleman_face
+Kd 1 1 1
+Ks 0 0 0
+illum 1
+map_Kd Putin_littleman_face.png
+
+newmtl Putin_littleman_chains
+Kd 1 1 1
+Ks 0 0 0
+illum 1
+map_Kd Putin_littleman_chains.png
+
+newmtl Putin_littleman_body
+Kd 0.06 0.06 0.06
+Ks 0 0 0
+illum 1
