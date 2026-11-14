@@ -5,15 +5,17 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 
 // Menu: Bounce Fusion > Build Game Scene
-// Builds materials (from the .mtl files), one prefab per tier, and a ready-to-play scene.
+// Builds materials (from the .mtl files), the numbered-ball prefab, one block prefab per
+// president, and a ready-to-play scene.
 // Re-run any time; it overwrites Assets/Generated and Assets/Scenes/BounceFusion.unity.
 public static class BounceFusionSetup
 {
     const string Gen = "Assets/Generated";
+    const string BallObj = "Assets/ball_marge.obj";
 
-    // Tier order lowest -> highest. Euler = rotation applied to the model so its face looks at
+    // President blocks. Euler = rotation applied to the model so its face looks at
     // the camera (camera sits at -Z looking +Z). Calibration knob: tweak if a face points the wrong way.
-    static readonly (string obj, Vector3 euler)[] Tiers =
+    static readonly (string obj, Vector3 euler)[] Presidents =
     {
         ("Assets/3d/Trump_cube.obj",          new Vector3(0, 0, 0)),
         ("Assets/3d/Obama_pyramid.obj",       new Vector3(0, 0, 0)),
@@ -42,24 +44,48 @@ public static class BounceFusionSetup
     {
         Directory.CreateDirectory(Gen);
         AssetDatabase.Refresh();
+        foreach (var guid in AssetDatabase.FindAssets("t:Prefab", new[] { Gen }))
+            AssetDatabase.DeleteAsset(AssetDatabase.GUIDToAssetPath(guid)); // drop prefabs from older versions
 
-        var prefabs = new GameObject[Tiers.Length];
-        for (int i = 0; i < Tiers.Length; i++)
+        // Blocks: kinematic president shapes with a hit-point label.
+        var blockPrefabs = new GameObject[Presidents.Length];
+        for (int i = 0; i < Presidents.Length; i++)
         {
             // runtime-scaled MeshColliders need readable meshes in builds
-            if (AssetImporter.GetAtPath(Tiers[i].obj) is ModelImporter imp && !imp.isReadable) { imp.isReadable = true; imp.SaveAndReimport(); }
-            var root = new GameObject($"Tier{i}_{Path.GetFileNameWithoutExtension(Tiers[i].obj)}");
-            Normalize(Model(Tiers[i].obj, root.transform, Tiers[i].euler), Vector3.one, Vector3.zero, uniform: true);
+            if (AssetImporter.GetAtPath(Presidents[i].obj) is ModelImporter imp && !imp.isReadable) { imp.isReadable = true; imp.SaveAndReimport(); }
+            var root = new GameObject($"Block_{Path.GetFileNameWithoutExtension(Presidents[i].obj)}");
+            Normalize(Model(Presidents[i].obj, root.transform, Presidents[i].euler), Vector3.one, Vector3.zero, uniform: true);
             foreach (var mf in root.GetComponentsInChildren<MeshFilter>())
                 mf.gameObject.AddComponent<MeshCollider>().convex = true;
             var rb = root.AddComponent<Rigidbody>();
-            rb.constraints = RigidbodyConstraints.FreezePositionZ | RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationY;
+            rb.isKinematic = true;
             rb.interpolation = RigidbodyInterpolation.Interpolate;
-            rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
-            root.AddComponent<Piece>().tier = i;
-            prefabs[i] = PrefabUtility.SaveAsPrefabAsset(root, $"{Gen}/{root.name}.prefab");
+            var block = root.AddComponent<Block>();
+            block.label = Label(root.transform, new Vector3(0, -0.28f, -0.8f), 0.06f, Color.white);
+            block.label.text = "1";
+            blockPrefabs[i] = PrefabUtility.SaveAsPrefabAsset(root, $"{Gen}/{root.name}.prefab");
             Object.DestroyImmediate(root);
         }
+
+        // Ball: unit sphere collider, rotation frozen so the number stays upright.
+        var ballMat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+        ballMat.SetFloat("_Smoothness", 0.6f);
+        AssetDatabase.CreateAsset(ballMat, $"{Gen}/Ball.mat");
+        var ballRoot = new GameObject("Ball");
+        var ballModel = Model(BallObj, ballRoot.transform, Vector3.zero);
+        Normalize(ballModel, Vector3.one, Vector3.zero, uniform: true);
+        foreach (var r in ballModel.GetComponentsInChildren<Renderer>())
+            r.sharedMaterials = System.Array.ConvertAll(r.sharedMaterials, _ => ballMat);
+        ballRoot.AddComponent<SphereCollider>().radius = 0.5f;
+        var ballRb = ballRoot.AddComponent<Rigidbody>();
+        ballRb.constraints = RigidbodyConstraints.FreezePositionZ | RigidbodyConstraints.FreezeRotation;
+        ballRb.interpolation = RigidbodyInterpolation.Interpolate;
+        ballRb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+        var ball = ballRoot.AddComponent<Ball>();
+        ball.label = Label(ballRoot.transform, new Vector3(0, 0, -0.55f), 0.07f, new Color(0.1f, 0.1f, 0.12f));
+        ball.label.text = "2";
+        var ballPrefab = PrefabUtility.SaveAsPrefabAsset(ballRoot, $"{Gen}/Ball.prefab");
+        Object.DestroyImmediate(ballRoot);
 
         var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
 
@@ -84,7 +110,8 @@ public static class BounceFusionSetup
         AssetDatabase.CreateAsset(lineMat, $"{Gen}/Line.mat");
 
         var gm = new GameObject("Game").AddComponent<MergeGame>();
-        gm.tierPrefabs = prefabs;
+        gm.ballPrefab = ballPrefab;
+        gm.blockPrefabs = blockPrefabs;
         gm.cannon = cannon.transform;
         gm.muzzleDistance = 1.9f;
         gm.boxWidth = BoxW;
@@ -109,6 +136,24 @@ public static class BounceFusionSetup
         EditorBuildSettings.scenes = list.ToArray();
         AssetDatabase.SaveAssets();
         Debug.Log("Bounce Fusion scene built. Press Play.");
+    }
+
+    // Number label facing the camera (TextMesh with the built-in font).
+    static TextMesh Label(Transform parent, Vector3 localPos, float charSize, Color color)
+    {
+        var go = new GameObject("Label");
+        go.transform.SetParent(parent, false);
+        go.transform.localPosition = localPos;
+        var tm = go.AddComponent<TextMesh>();
+        tm.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        go.GetComponent<MeshRenderer>().sharedMaterial = tm.font.material;
+        tm.fontSize = 64;
+        tm.characterSize = charSize;
+        tm.fontStyle = FontStyle.Bold;
+        tm.anchor = TextAnchor.MiddleCenter;
+        tm.alignment = TextAlignment.Center;
+        tm.color = color;
+        return tm;
     }
 
     // Instantiates an imported model under parent with rotation and materials built from its .mtl.
