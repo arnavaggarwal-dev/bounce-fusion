@@ -25,17 +25,16 @@ public static class BounceFusionSetup
     static readonly Vector3 CannonEuler = Vector3.zero; // barrel modelled along Y; use (0,0,180) if it fires backwards
     const float BoxW = 6f, BoxH = 10f;
 
-    // CI entry point (GitHub Actions / GameCI): build the scene, then a WebGL player.
+    // Builds the scene, then a WebGL player into docs/ (published to GitHub Pages by build.bat).
+    [MenuItem("Bounce Fusion/Build WebGL")]
     public static void BuildWebGL()
     {
         Build();
-        var args = System.Environment.GetCommandLineArgs();
-        int i = System.Array.IndexOf(args, "-customBuildPath");
-        string output = i >= 0 && i + 1 < args.Length ? args[i + 1] : "build/WebGL/WebGL";
         // GitHub Pages can't serve pre-compressed Brotli/Gzip files with the right headers
         PlayerSettings.WebGL.compressionFormat = WebGLCompressionFormat.Disabled;
-        var report = BuildPipeline.BuildPlayer(new[] { "Assets/Scenes/BounceFusion.unity" }, output, BuildTarget.WebGL, BuildOptions.None);
-        if (report.summary.result != UnityEditor.Build.Reporting.BuildResult.Succeeded) EditorApplication.Exit(1);
+        var report = BuildPipeline.BuildPlayer(new[] { "Assets/Scenes/BounceFusion.unity" }, "docs", BuildTarget.WebGL, BuildOptions.None);
+        bool ok = report.summary.result == UnityEditor.Build.Reporting.BuildResult.Succeeded;
+        EditorUtility.DisplayDialog("Bounce Fusion", ok ? "WebGL build done in docs/. Run build.bat to publish." : "WebGL build failed, see Console.", "OK");
     }
 
     [MenuItem("Bounce Fusion/Build Game Scene")]

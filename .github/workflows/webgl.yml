@@ -1,8 +1,11 @@
-name: Build WebGL
+name: Publish WebGL
 
+# The WebGL build is made locally (Bounce Fusion > Build WebGL in the Unity editor) into docs/.
+# This just publishes that folder to GitHub Pages.
 on:
   push:
     branches: [master]
+    paths: [docs/**]
   workflow_dispatch:
 
 permissions:
@@ -15,53 +18,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: jlumbroso/free-disk-space@v1.3.1
-        with:
-          tool-cache: true
-
-      - uses: actions/checkout@v4
-
-      - uses: actions/cache@v4
-        with:
-          path: Library
-          key: Library-WebGL-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
-          restore-keys: Library-WebGL-
-
-      # Unity 6 personal licenses are entitlement-based (no .ulf serial). A login + -serial run
-      # activates the entitlement and then complains about the serial, so ignore that exit code
-      # and build in the same container, where the activated license now lives.
-      - name: Build WebGL with Unity
-        env:
-          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
-          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
-        run: |
-          docker run --rm -v "$PWD:/project" -e UNITY_EMAIL -e UNITY_PASSWORD \
-            unityci/editor:ubuntu-6000.3.10f1-webgl-3 bash -c '
-              mkdir -p /tmp/blank/Assets
-              unity-editor -batchmode -nographics -logFile - -quit \
-                -serial x -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" \
-                -projectPath /tmp/blank | grep -E "Licensing|entitlement|serial" || true
-              ls -la ~/.local/share/unity3d/Unity/licenses 2>/dev/null
-              unity-editor -batchmode -nographics -logFile - -quit \
-                -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" \
-                -projectPath /project -buildTarget WebGL \
-                -executeMethod BounceFusionSetup.BuildWebGL \
-                -customBuildPath /project/build/WebGL/WebGL'
-          test -f build/WebGL/WebGL/index.html
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: build/WebGL/WebGL
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
       - id: deploy
         uses: actions/deploy-pages@v4
