@@ -4,10 +4,13 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.SceneManagement;
 
-// Aim the cannon, release to fire a numbered ball. Balls bounce around the box and smash
-// president blocks: each hit takes the ball's number off the block's hit points. Two balls with
-// the same number merge into double. Every few shots the blocks rise one row and a new row
-// comes up from the bottom. A block reaching the red line = game over.
+// Turn loop:
+//  1. Aim the cannon, release: every ball you own fires in a stream.
+//  2. Balls bounce down through the president blocks. Each hit takes the ball's number off the
+//     block's hit points. Two balls with the same number touching merge into one worth double.
+//  3. Balls that fall out the bottom roll into the pipe, which carries them back up to the cannon.
+//  4. When every ball is back: blocks rise one row, a new row comes up, you gain a new "2" ball.
+// A block reaching the red line = game over.
 public class MergeGame : MonoBehaviour
 {
     [Header("Prefabs (built by Bounce Fusion > Build Game Scene)")]
@@ -19,20 +22,25 @@ public class MergeGame : MonoBehaviour
     public float boxHeight = 10f;
     public float dangerY = 8.8f;
     public float bounciness = 0.6f;
+    public float captureY = -0.4f;  // a ball below this has left the box and goes into the pipe
 
     [Header("Blocks")]
     public int columns = 4;
     public float rowSpacing = 1.4f;
     public float blockSize = 1.05f;
     public int startRows = 2;
-    public int shotsPerRise = 3;
 
     [Header("Cannon")]
     public Transform cannon;       // pivot, rotated about Z; barrel points down at 0
     public float muzzleDistance = 1.9f;
     public float shotSpeed = 14f;
+    public float fireInterval = 0.1f;
     public float maxAimAngle = 75f;
-    public float reloadTime = 0.45f;
+    public int startBalls = 3;
+
+    [Header("Pipe")]
+    public Vector3[] pipePath;     // world points: intake mouth -> ... -> exit above the cannon
+    public float pipeSpeed = 14f;
 
     public Material lineMaterial;
     public Color[] ballColors =
@@ -42,14 +50,19 @@ public class MergeGame : MonoBehaviour
         new Color(0.3f, 0.85f, 0.95f), new Color(0.4f, 0.9f, 0.45f),
     };
 
-    readonly List<Ball> balls = new List<Ball>();
+    enum State { Aiming, Playing, Over }
+
+    readonly List<int> ammo = new List<int>();     // ball values waiting in the cannon
+    readonly List<Ball> balls = new List<Ball>();  // balls bouncing in the box
     readonly List<Block> blocks = new List<Block>();
+    State state;
+    int inPlay;           // fired balls not yet back in the cannon (in box or in pipe)
+    bool firing, pressArmed;
+    int score, best, turn = 1;
+    float turnStart;
     PhysicsMaterial bouncy;
     LineRenderer aimLine;
-    Ball loaded;
-    int nextValue, score, best, shots;
-    float reloadAt, overTimer;
-    bool gameOver;
+    Ball preview;
     Camera cam;
 
     float FirstRowY => blockSize * 0.5f + 0.15f;
@@ -60,42 +73,50 @@ public class MergeGame : MonoBehaviour
         best = PlayerPrefs.GetInt("best", 0);
         bouncy = new PhysicsMaterial("bouncy") { bounciness = bounciness, dynamicFriction = 0.2f, staticFriction = 0.2f, bounceCombine = PhysicsMaterialCombine.Maximum };
 
+        // side walls and a lid; the bottom is open so balls drop out into the pipe
         float hw = boxWidth / 2f, wallH = boxHeight + 6f;
         Wall(new Vector3(-hw - 0.5f, wallH / 2f, 0), new Vector3(1, wallH, 2));
         Wall(new Vector3(hw + 0.5f, wallH / 2f, 0), new Vector3(1, wallH, 2));
-        Wall(new Vector3(0, -0.5f, 0), new Vector3(boxWidth + 2, 1, 2));
+        Wall(new Vector3(0, wallH + 0.5f, 0), new Vector3(boxWidth + 2, 1, 2));
 
         var danger = Line(new Color(1, 0.2f, 0.2f, 0.6f), 0.05f);
         danger.SetPositions(new[] { new Vector3(-hw, dangerY, -0.6f), new Vector3(hw, dangerY, -0.6f) });
         aimLine = Line(new Color(1, 1, 1, 0.35f), 0.06f);
 
         for (int r = startRows - 1; r >= 0; r--) SpawnRow(FirstRowY + r * rowSpacing, FirstRowY + r * rowSpacing);
-        nextValue = RandomValue();
-        Reload();
+        for (int i = 0; i < startBalls; i++) ammo.Add(2);
+        state = State.Aiming;
     }
 
     void Update()
     {
-        if (gameOver)
+        var pointer = Pointer.current;
+        if (state == State.Over)
         {
-            if (Pointer.current != null && Pointer.current.press.wasPressedThisFrame)
+            if (pointer != null && pointer.press.wasPressedThisFrame)
                 SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
             return;
         }
 
-        Aim();
-        if (loaded == null && Time.time >= reloadAt) Reload();
-        if (loaded != null) loaded.transform.position = Muzzle();
-        if (loaded != null && Pointer.current != null && Pointer.current.press.wasReleasedThisFrame) Fire();
-
-        // also lose if settled balls pile up over the line for 2s
         balls.RemoveAll(b => b == null);
-        bool above = false;
-        foreach (var b in balls)
-            if (b != loaded && Time.time - b.spawnTime > 1.5f && b.transform.position.y + b.transform.localScale.y * 0.5f > dangerY)
-                above = true;
-        overTimer = above ? overTimer + Time.deltaTime : 0f;
-        if (overTimer > 2f) EndGame();
+        foreach (var b in balls.ToArray())
+        {
+            if (b.transform.position.y < captureY) { StartCoroutine(Return(b)); continue; }
+            Unstick(b);
+        }
+
+        if (state == State.Aiming)
+        {
+            Aim();
+            ShowPreview();
+            if (pointer != null && pointer.press.wasPressedThisFrame) pressArmed = true;
+            if (pressArmed && pointer != null && pointer.press.wasReleasedThisFrame) StartCoroutine(FireAll());
+        }
+        else if (state == State.Playing)
+        {
+            if (!firing && inPlay == 0) EndTurn();
+            else if (!firing && Time.time - turnStart > 20f) RecallAll(); // safety: never wait forever
+        }
     }
 
     void Aim()
@@ -109,27 +130,94 @@ public class MergeGame : MonoBehaviour
         cannon.rotation = Quaternion.Euler(0, 0, angle);
 
         Vector3 a = Muzzle();
+        aimLine.enabled = true;
         aimLine.SetPositions(new[] { a, a + AimDir() * 6f });
     }
 
     Vector3 AimDir() => cannon.rotation * Vector3.down;
     Vector3 Muzzle() => cannon.position + AimDir() * muzzleDistance;
 
-    void Reload()
+    // frozen copy of the next ball sitting in the muzzle while you aim
+    void ShowPreview()
     {
-        loaded = SpawnBall(nextValue, Muzzle());
-        Freeze(loaded.gameObject, true);
-        nextValue = RandomValue();
+        if (preview != null && preview.value != ammo[0]) { Destroy(preview.gameObject); preview = null; }
+        if (preview == null)
+        {
+            preview = SpawnBall(ammo[0], Muzzle(), track: false);
+            Freeze(preview.gameObject, true);
+        }
+        preview.transform.position = Muzzle();
     }
 
-    void Fire()
+    IEnumerator FireAll()
     {
-        Freeze(loaded.gameObject, false);
-        loaded.spawnTime = Time.time;
-        loaded.GetComponent<Rigidbody>().linearVelocity = AimDir() * shotSpeed;
-        loaded = null;
-        reloadAt = Time.time + reloadTime;
-        if (++shots % shotsPerRise == 0) Rise();
+        state = State.Playing;
+        firing = true;
+        pressArmed = false;
+        aimLine.enabled = false;
+        turnStart = Time.time;
+        if (preview != null) { Destroy(preview.gameObject); preview = null; }
+
+        Vector3 dir = AimDir();
+        int count = ammo.Count; // balls returning mid-stream wait for next turn
+        for (int i = 0; i < count; i++)
+        {
+            int value = ammo[0];
+            ammo.RemoveAt(0);
+            var b = SpawnBall(value, Muzzle(), track: true);
+            b.GetComponent<Rigidbody>().linearVelocity = dir * shotSpeed;
+            inPlay++;
+            yield return new WaitForSeconds(fireInterval);
+        }
+        firing = false;
+    }
+
+    // ball left the box: slide to the pipe mouth, ride the pipe up, drop into the cannon
+    IEnumerator Return(Ball b)
+    {
+        balls.Remove(b);
+        b.merged = true; // stop it merging or hitting while in the pipe
+        Freeze(b.gameObject, true);
+        var t = b.transform;
+        if (pipePath != null && pipePath.Length > 0)
+        {
+            var points = new List<Vector3> { new Vector3(t.position.x, pipePath[0].y, pipePath[0].z) };
+            points.AddRange(pipePath);
+            foreach (var p in points)
+                while (t && (t.position - p).sqrMagnitude > 0.0001f)
+                {
+                    t.position = Vector3.MoveTowards(t.position, p, pipeSpeed * Time.deltaTime);
+                    yield return null;
+                }
+        }
+        if (b) { ammo.Add(b.value); Destroy(b.gameObject); }
+        inPlay--;
+    }
+
+    void RecallAll()
+    {
+        foreach (var b in balls.ToArray()) StartCoroutine(Return(b));
+        turnStart = Time.time;
+    }
+
+    // a ball resting on a flat block top would never leave: give it a shove
+    void Unstick(Ball b)
+    {
+        var rb = b.GetComponent<Rigidbody>();
+        b.stillTime = rb.linearVelocity.sqrMagnitude < 0.09f ? b.stillTime + Time.deltaTime : 0f;
+        if (b.stillTime > 1f)
+        {
+            rb.linearVelocity = new Vector3(Random.Range(-3f, 3f), -1f, 0);
+            b.stillTime = 0f;
+        }
+    }
+
+    void EndTurn()
+    {
+        turn++;
+        ammo.Add(2); // a new ball every turn
+        Rise();
+        if (state != State.Over) state = State.Aiming;
     }
 
     static void Freeze(GameObject go, bool frozen)
@@ -138,13 +226,12 @@ public class MergeGame : MonoBehaviour
         foreach (var c in go.GetComponentsInChildren<Collider>()) c.enabled = !frozen;
     }
 
-    static int RandomValue() => new[] { 2, 2, 2, 4, 4, 8 }[Random.Range(0, 6)];
     static int Log2(int v) => Mathf.RoundToInt(Mathf.Log(v, 2));
 
-    Ball SpawnBall(int value, Vector3 pos)
+    Ball SpawnBall(int value, Vector3 pos, bool track)
     {
         var go = Instantiate(ballPrefab, pos, Quaternion.identity);
-        float size = Mathf.Min(0.55f + 0.07f * (Log2(value) - 1), 1.2f);
+        float size = Mathf.Min(0.5f + 0.06f * (Log2(value) - 1), 1.1f);
         go.transform.localScale = Vector3.one * size;
         foreach (var c in go.GetComponentsInChildren<Collider>()) c.sharedMaterial = bouncy;
         go.GetComponent<Rigidbody>().mass = size * size;
@@ -158,12 +245,11 @@ public class MergeGame : MonoBehaviour
         b.value = value;
         b.label.text = value.ToString();
         b.game = this;
-        b.spawnTime = Time.time;
-        balls.Add(b);
+        if (track) balls.Add(b);
         return b;
     }
 
-    // Moves every block up one row and brings a new row up from under the floor.
+    // Moves every block up one row and brings a new row up from under the box.
     void Rise()
     {
         blocks.RemoveAll(b => b == null);
@@ -176,10 +262,9 @@ public class MergeGame : MonoBehaviour
     void SpawnRow(float y, float targetY)
     {
         float colW = boxWidth / columns;
-        int baseHp = 3 + shots;
         var free = new List<int>();
         for (int c = 0; c < columns; c++) free.Add(c);
-        int count = Random.Range(1, columns); // never a full row, so balls can get through
+        int count = Random.Range(1, columns); // never a full row, so balls can drop through
         for (int i = 0; i < count; i++)
         {
             int k = Random.Range(0, free.Count);
@@ -191,14 +276,14 @@ public class MergeGame : MonoBehaviour
             foreach (var col in go.GetComponentsInChildren<Collider>()) col.sharedMaterial = bouncy;
             var b = go.GetComponent<Block>();
             b.targetY = targetY;
-            b.SetHp(Mathf.Max(1, Mathf.RoundToInt(baseHp * Random.Range(0.6f, 1.6f))));
+            b.SetHp(turn * Random.Range(1, 4) + 2);
             blocks.Add(b);
         }
     }
 
     public void HitBlock(Ball ball, Block block)
     {
-        if (gameOver || block.hp <= 0 || ball == loaded) return;
+        if (state == State.Over || ball.merged || block.hp <= 0) return;
         score += Mathf.Min(ball.value, block.hp);
         block.SetHp(block.hp - ball.value);
         if (block.hp <= 0)
@@ -210,8 +295,10 @@ public class MergeGame : MonoBehaviour
 
     public void Merge(Ball a, Ball b)
     {
-        if (gameOver) return;
+        if (state == State.Over || !balls.Contains(a) || !balls.Contains(b)) return;
         a.merged = b.merged = true;
+        balls.Remove(a);
+        balls.Remove(b);
         Vector3 pos = (a.transform.position + b.transform.position) / 2f;
         Vector3 vel = (a.GetComponent<Rigidbody>().linearVelocity + b.GetComponent<Rigidbody>().linearVelocity) / 2f;
         Destroy(a.gameObject);
@@ -219,7 +306,8 @@ public class MergeGame : MonoBehaviour
 
         int value = a.value * 2;
         score += value;
-        var n = SpawnBall(value, pos);
+        inPlay--; // two balls became one
+        var n = SpawnBall(value, pos, track: true);
         n.GetComponent<Rigidbody>().linearVelocity = vel + Vector3.up * 2f; // little hop
         StartCoroutine(Pop(n.transform, n.transform.localScale.x));
     }
@@ -236,7 +324,7 @@ public class MergeGame : MonoBehaviour
 
     void EndGame()
     {
-        gameOver = true;
+        state = State.Over;
         if (score > best) PlayerPrefs.SetInt("best", best = score);
         aimLine.enabled = false;
     }
@@ -264,10 +352,10 @@ public class MergeGame : MonoBehaviour
 
     void OnGUI()
     {
-        var s = new GUIStyle(GUI.skin.label) { fontSize = Screen.height / 22, fontStyle = FontStyle.Bold, alignment = TextAnchor.UpperCenter };
+        var s = new GUIStyle(GUI.skin.label) { fontSize = Screen.height / 24, fontStyle = FontStyle.Bold, alignment = TextAnchor.UpperCenter };
         s.normal.textColor = Color.white;
-        GUI.Label(new Rect(0, 10, Screen.width, Screen.height / 10f), $"{score}   (best {best})   next {nextValue}", s);
-        if (gameOver)
+        GUI.Label(new Rect(0, 10, Screen.width, Screen.height / 10f), $"{score}   best {best}   turn {turn}   balls x{ammo.Count + inPlay}", s);
+        if (state == State.Over)
         {
             s.alignment = TextAnchor.MiddleCenter;
             GUI.Label(new Rect(0, 0, Screen.width, Screen.height), "GAME OVER\ntap to restart", s);

@@ -91,8 +91,8 @@ public static class BounceFusionSetup
 
         var cam = Camera.main;
         cam.orthographic = true;
-        cam.orthographicSize = 7.5f;
-        cam.transform.SetPositionAndRotation(new Vector3(0, 6.3f, -20), Quaternion.identity);
+        cam.orthographicSize = 8.8f;
+        cam.transform.SetPositionAndRotation(new Vector3(0, 6.9f, -20), Quaternion.identity);
         cam.clearFlags = CameraClearFlags.SolidColor;
         cam.backgroundColor = new Color(0.12f, 0.1f, 0.18f);
 
@@ -106,6 +106,20 @@ public static class BounceFusionSetup
         // barrel 2 units long, breech slightly above the pivot, muzzle pointing down
         Normalize(Model("Assets/3d/cannon.obj", barrel.transform, CannonEuler), new Vector3(2f, 2f, 2f), new Vector3(0, -0.6f, 0), uniform: true);
 
+        // Pipe: intake mouth under the box, tube up the right side, exit dropping into the cannon.
+        // Model (pipe.obj) shape in 0..1 of its bounds, tube side on the right:
+        //   mouth (0.47, 0.04)  bottom bend (0.90, 0.04)  top bend (0.90, 0.96)  over (0.09, 0.96)  exit (0.09, 0.86)
+        // Placed so the exit sits just above the cannon and the mouth just under the box.
+        var pipe = new GameObject("Pipe");
+        var pipeModel = Model("Assets/3d/pipe.obj", pipe.transform, Vector3.zero);
+        if (ExitOnRight(pipeModel)) pipeModel.transform.localRotation = Quaternion.Euler(0, 180, 0);
+        const float exitY = BoxH + 3f, mouthY = -0.9f, tubeX = BoxW / 2f + 1.4f;
+        float pipeW = tubeX / (0.904f - 0.093f), pipeH = (exitY - mouthY) / (0.86f - 0.037f);
+        float pipeX0 = -0.093f * pipeW, pipeY0 = mouthY - 0.037f * pipeH;
+        Normalize(pipeModel, new Vector3(pipeW, pipeH, 1f), new Vector3(pipeX0 + pipeW / 2f, pipeY0 + pipeH / 2f, 0.2f), uniform: false);
+        Vector3 P(float u, float v) => new Vector3(pipeX0 + u * pipeW, pipeY0 + v * pipeH, -0.7f);
+        var pipePath = new[] { P(0.47f, 0.037f), P(0.904f, 0.037f), P(0.904f, 0.957f), P(0.093f, 0.957f), P(0.093f, 0.86f) };
+
         var lineMat = new Material(Shader.Find("Sprites/Default"));
         AssetDatabase.CreateAsset(lineMat, $"{Gen}/Line.mat");
 
@@ -117,6 +131,7 @@ public static class BounceFusionSetup
         gm.boxWidth = BoxW;
         gm.boxHeight = BoxH;
         gm.lineMaterial = lineMat;
+        gm.pipePath = pipePath;
 
         var music = AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/audio/Hygiene.mp3");
         if (music)
@@ -136,6 +151,21 @@ public static class BounceFusionSetup
         EditorBuildSettings.scenes = list.ToArray();
         AssetDatabase.SaveAssets();
         Debug.Log("Bounce Fusion scene built. Press Play.");
+    }
+
+    // The pipe's exit stub is the only geometry at ~83-89% of its height; tells which side it's on.
+    static bool ExitOnRight(GameObject model)
+    {
+        var b = GetBounds(model);
+        float sum = 0; int n = 0;
+        foreach (var mf in model.GetComponentsInChildren<MeshFilter>())
+            foreach (var v in mf.sharedMesh.vertices)
+            {
+                var w = mf.transform.TransformPoint(v);
+                float t = (w.y - b.min.y) / b.size.y;
+                if (t > 0.8f && t < 0.89f) { sum += w.x; n++; }
+            }
+        return n > 0 && sum / n > b.center.x;
     }
 
     // Number label facing the camera (TextMesh with the built-in font).

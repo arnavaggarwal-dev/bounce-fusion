@@ -7,7 +7,7 @@ public class Ball : MonoBehaviour
     public TextMesh label;
     [HideInInspector] public MergeGame game;
     [HideInInspector] public bool merged;
-    [HideInInspector] public float spawnTime;
+    [HideInInspector] public float stillTime;
 
     void OnCollisionEnter(Collision c)
     {
