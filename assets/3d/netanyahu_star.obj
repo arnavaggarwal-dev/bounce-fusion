@@ -1,4 +1,4 @@
-mtllib star_face.mtl
+mtllib Netanyahu_star.mtl
 o StarFace
 v -19.348000 0.000000 -44.000000
 v -23.793999 0.000000 -52.355999
@@ -264,7 +264,7 @@ vt 1.000000 0.000000
 vt 0.000000 1.000000
 vt 1.000000 0.000000
 vt 1.000000 1.000000
-usemtl face
+usemtl Netanyahu_star
 s off
 f 1/1 2/2 3/3
 f 4/4 5/5 6/6
