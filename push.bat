@@ -1,6 +1,6 @@
 @echo off
-set /p msg=Input commit msg:  
+set /p msg=Input commit msg:
 git add .
-git commit -m $msg
+git commit -m %msg%
 git pull
-git push 
+git push   
