@@ -38,7 +38,8 @@ public static class BounceFusionSetup
         PlayerSettings.WebGL.template = "PROJECT:Fullscreen"; // Assets/WebGLTemplates/Fullscreen: canvas fills the browser window
         var report = BuildPipeline.BuildPlayer(new[] { "Assets/Scenes/BounceFusion.unity" }, "docs", BuildTarget.WebGL, BuildOptions.None);
         bool ok = report.summary.result == UnityEditor.Build.Reporting.BuildResult.Succeeded;
-        EditorUtility.DisplayDialog("Bounce Fusion", ok ? "WebGL build done in docs/. Run build.bat to publish." : "WebGL build failed, see Console.", "OK");
+        if (Application.isBatchMode) { if (!ok) throw new System.Exception("WebGL build failed"); } // non-zero exit code
+        else EditorUtility.DisplayDialog("Bounce Fusion", ok ? "WebGL build done in docs/. Run build.bat to publish." : "WebGL build failed, see Console.", "OK");
     }
 
     [MenuItem("Bounce Fusion/Build Game Scene")]
@@ -54,13 +55,15 @@ public static class BounceFusionSetup
             // runtime-scaled MeshColliders need readable meshes in builds
             if (AssetImporter.GetAtPath(Presidents[i].obj) is ModelImporter imp && !imp.isReadable) { imp.isReadable = true; imp.SaveAndReimport(); }
             var root = new GameObject($"Block_{Path.GetFileNameWithoutExtension(Presidents[i].obj)}");
-            Normalize(Model(Presidents[i].obj, root.transform, Presidents[i].euler), Vector3.one, Vector3.zero, uniform: true);
+            var blockModel = Model(Presidents[i].obj, root.transform, Presidents[i].euler);
+            Normalize(blockModel, Vector3.one, Vector3.zero, uniform: true);
             foreach (var mf in root.GetComponentsInChildren<MeshFilter>())
                 mf.gameObject.AddComponent<MeshCollider>().convex = true;
             var rb = root.AddComponent<Rigidbody>();
             rb.isKinematic = true;
             rb.interpolation = RigidbodyInterpolation.Interpolate;
             var block = root.AddComponent<Block>();
+            block.model = blockModel.transform; // spun by Block; the label is a sibling so it stays upright
             block.label = Label(root.transform, new Vector3(0, -0.28f, -0.8f), 0.06f, Color.white);
             block.label.text = "1";
             blockPrefabs[i] = PrefabUtility.SaveAsPrefabAsset(root, $"{Gen}/{root.name}.prefab");
@@ -140,7 +143,7 @@ public static class BounceFusionSetup
         gm.lineMaterial = lineMat;
         gm.pipePath = pipePath;
 
-        var music = AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/audio/Hygiene.mp3");
+        var music = AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/audio/theme.mp3");
         if (music)
         {
             var src = gm.gameObject.AddComponent<AudioSource>();

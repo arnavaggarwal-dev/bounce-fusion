@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.SceneManagement;
+using UnityEngine.Video;
 
 // Turn loop:
 //  1. Aim the cannon, release: every ball you own fires in a stream.
@@ -50,7 +51,14 @@ public class MergeGame : MonoBehaviour
         new Color(0.3f, 0.85f, 0.95f), new Color(0.4f, 0.9f, 0.45f),
     };
 
-    enum State { Aiming, Playing, Over }
+    enum State { Intro, Aiming, Playing, Over }
+
+    // intro.mp4 lives in StreamingAssets because WebGL can only play video from a URL.
+    // Shown once per launch (restarts skip it). Starts on the first tap: browsers block autoplay with sound.
+    static bool introDone;
+    VideoPlayer intro;
+    bool introStarted;
+    AudioSource music;
 
     readonly List<int> ammo = new List<int>();     // ball values waiting in the cannon
     readonly List<Ball> balls = new List<Ball>();  // balls bouncing in the box
@@ -100,12 +108,45 @@ public class MergeGame : MonoBehaviour
         for (int r = startRows - 1; r >= 0; r--) SpawnRow(FirstRowY + r * rowSpacing, FirstRowY + r * rowSpacing);
         for (int i = 0; i < startBalls; i++) ammo.Add(2);
         state = State.Aiming;
+
+        music = GetComponent<AudioSource>();
+        if (!introDone)
+        {
+            state = State.Intro;
+            if (music) music.Stop();
+            intro = cam.gameObject.AddComponent<VideoPlayer>();
+            intro.playOnAwake = false;
+            intro.url = Application.streamingAssetsPath + "/intro.mp4";
+            intro.renderMode = VideoRenderMode.CameraNearPlane;
+            intro.targetCamera = cam;
+            intro.aspectRatio = VideoAspectRatio.FitInside;
+            intro.loopPointReached += _ => EndIntro();
+            intro.errorReceived += (_, __) => EndIntro(); // missing/unplayable video: just start the game
+        }
+    }
+
+    void EndIntro()
+    {
+        if (state != State.Intro) return;
+        introDone = true;
+        if (intro) Destroy(intro);
+        state = State.Aiming;
+        if (music) music.Play();
     }
 
     void Update()
     {
         var pointer = Pointer.current;
         if (!Mathf.Approximately(cam.aspect, fitAspect)) FitCamera(); // window resized / phone rotated
+        if (state == State.Intro)
+        {
+            if (pointer != null && pointer.press.wasPressedThisFrame)
+            {
+                if (!introStarted) { introStarted = true; intro.Play(); }
+                else EndIntro(); // tap again to skip
+            }
+            return;
+        }
         if (state == State.Over)
         {
             if (pointer != null && pointer.press.wasPressedThisFrame)
@@ -371,6 +412,13 @@ public class MergeGame : MonoBehaviour
     {
         var s = new GUIStyle(GUI.skin.label) { fontSize = Screen.height / 24, fontStyle = FontStyle.Bold, alignment = TextAnchor.UpperCenter };
         s.normal.textColor = Color.white;
+        if (state == State.Intro)
+        {
+            s.alignment = introStarted ? TextAnchor.LowerRight : TextAnchor.MiddleCenter;
+            if (introStarted) s.fontSize /= 2;
+            GUI.Label(new Rect(0, 0, Screen.width - 10, Screen.height - 10), introStarted ? "tap to skip" : "TAP TO PLAY", s);
+            return;
+        }
         GUI.Label(new Rect(0, 10, Screen.width, Screen.height / 10f), $"{score}   best {best}   turn {turn}   balls x{ammo.Count + inPlay}", s);
         if (state == State.Over)
         {
