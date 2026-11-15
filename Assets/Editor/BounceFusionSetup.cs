@@ -11,7 +11,7 @@ using UnityEngine;
 public static class BounceFusionSetup
 {
     const string Gen = "Assets/Generated";
-    const string BallObj = "Assets/ball_marge.obj";
+    const string BallObj = "Assets/3d/ball_marge.obj";
 
     // President blocks. Euler = rotation applied to the model so its face looks at
     // the camera (camera sits at -Z looking +Z). Calibration knob: tweak if a face points the wrong way.
@@ -26,6 +26,7 @@ public static class BounceFusionSetup
     };
     static readonly Vector3 CannonEuler = Vector3.zero; // barrel modelled along Y; use (0,0,180) if it fires backwards
     const float BoxW = 6f, BoxH = 10f;
+    const float CameraTilt = 8f; // degrees looking down at the box; 0 = straight on
 
     // Builds the scene, then a WebGL player into docs/ (published to GitHub Pages by build.bat).
     [MenuItem("Bounce Fusion/Build WebGL")]
@@ -34,6 +35,7 @@ public static class BounceFusionSetup
         Build();
         // GitHub Pages can't serve pre-compressed Brotli/Gzip files with the right headers
         PlayerSettings.WebGL.compressionFormat = WebGLCompressionFormat.Disabled;
+        PlayerSettings.WebGL.template = "PROJECT:Fullscreen"; // Assets/WebGLTemplates/Fullscreen: canvas fills the browser window
         var report = BuildPipeline.BuildPlayer(new[] { "Assets/Scenes/BounceFusion.unity" }, "docs", BuildTarget.WebGL, BuildOptions.None);
         bool ok = report.summary.result == UnityEditor.Build.Reporting.BuildResult.Succeeded;
         EditorUtility.DisplayDialog("Bounce Fusion", ok ? "WebGL build done in docs/. Run build.bat to publish." : "WebGL build failed, see Console.", "OK");
@@ -42,10 +44,8 @@ public static class BounceFusionSetup
     [MenuItem("Bounce Fusion/Build Game Scene")]
     public static void Build()
     {
-        Directory.CreateDirectory(Gen);
-        AssetDatabase.Refresh();
-        foreach (var guid in AssetDatabase.FindAssets("t:Prefab", new[] { Gen }))
-            AssetDatabase.DeleteAsset(AssetDatabase.GUIDToAssetPath(guid)); // drop prefabs from older versions
+        AssetDatabase.DeleteAsset(Gen); // everything in here is rebuilt below; drops leftovers from replaced models
+        AssetDatabase.CreateFolder("Assets", "Generated");
 
         // Blocks: kinematic president shapes with a hit-point label.
         var blockPrefabs = new GameObject[Presidents.Length];
@@ -92,12 +92,16 @@ public static class BounceFusionSetup
         var cam = Camera.main;
         cam.orthographic = true;
         cam.orthographicSize = 8.8f;
-        cam.transform.SetPositionAndRotation(new Vector3(0, 6.9f, -20), Quaternion.identity);
+        // slight downward tilt; MergeGame re-frames position/size at runtime to fill the screen
+        var camRot = Quaternion.Euler(CameraTilt, 0, 0);
+        cam.transform.SetPositionAndRotation(new Vector3(0, 6.9f, 0) - camRot * Vector3.forward * 20f, camRot);
         cam.clearFlags = CameraClearFlags.SolidColor;
         cam.backgroundColor = new Color(0.12f, 0.1f, 0.18f);
 
+        // frame.obj is modelled facing +Z (open front, patterned back plate at z=0). The camera looks from -Z,
+        // so turn it around: open side to the camera, plate behind. Its depth (-0.7..1.3) encloses the play plane z=0.
         var frame = new GameObject("Frame");
-        Normalize(Model("Assets/3d/frame.obj", frame.transform, Vector3.zero), new Vector3(BoxW + 1f, BoxH + 1f, 1.2f), new Vector3(0, BoxH / 2f - 0.5f, 0.3f), uniform: false);
+        Normalize(Model("Assets/3d/frame.obj", frame.transform, new Vector3(0, 180, 0)), new Vector3(BoxW + 1f, BoxH + 1f, 2f), new Vector3(0, BoxH / 2f - 0.5f, 0.3f), uniform: false);
 
         var cannon = new GameObject("Cannon");
         cannon.transform.position = new Vector3(0, BoxH + 2.2f, 0);
@@ -107,18 +111,21 @@ public static class BounceFusionSetup
         Normalize(Model("Assets/3d/cannon.obj", barrel.transform, CannonEuler), new Vector3(2f, 2f, 2f), new Vector3(0, -0.6f, 0), uniform: true);
 
         // Pipe: intake mouth under the box, tube up the right side, exit dropping into the cannon.
-        // Model (pipe.obj) shape in 0..1 of its bounds, tube side on the right:
-        //   mouth (0.47, 0.04)  bottom bend (0.90, 0.04)  top bend (0.90, 0.96)  over (0.09, 0.96)  exit (0.09, 0.86)
-        // Placed so the exit sits just above the cannon and the mouth just under the box.
+        // Landmarks of pipe.obj in 0..1 of its bounds (tube side on the right), measured from its vertices.
+        // Re-measure these if pipe.obj is swapped for a differently shaped model.
+        const float mouthU = 0.47f, bottomV = 0.045f, tubeU = 0.907f, topV = 0.956f, exitU = 0.093f, exitV = 0.845f;
+        // Scaled uniformly (keeps the model's proportions) so the exit sits just above the cannon and the
+        // mouth just under the box; the tube lands wherever the model's width puts it.
         var pipe = new GameObject("Pipe");
         var pipeModel = Model("Assets/3d/pipe.obj", pipe.transform, Vector3.zero);
         if (ExitOnRight(pipeModel)) pipeModel.transform.localRotation = Quaternion.Euler(0, 180, 0);
-        const float exitY = BoxH + 3f, mouthY = -0.9f, tubeX = BoxW / 2f + 1.4f;
-        float pipeW = tubeX / (0.904f - 0.093f), pipeH = (exitY - mouthY) / (0.86f - 0.037f);
-        float pipeX0 = -0.093f * pipeW, pipeY0 = mouthY - 0.037f * pipeH;
-        Normalize(pipeModel, new Vector3(pipeW, pipeH, 1f), new Vector3(pipeX0 + pipeW / 2f, pipeY0 + pipeH / 2f, 0.2f), uniform: false);
+        const float exitY = BoxH + 3f, mouthY = -0.9f;
+        var pipeSize = GetBounds(pipeModel).size;
+        float pipeH = (exitY - mouthY) / (exitV - bottomV), pipeW = pipeH * pipeSize.x / pipeSize.y;
+        float pipeX0 = -exitU * pipeW, pipeY0 = mouthY - bottomV * pipeH;
+        Normalize(pipeModel, new Vector3(pipeW, pipeH, 1f), new Vector3(pipeX0 + pipeW / 2f, pipeY0 + pipeH / 2f, 0.2f), uniform: true);
         Vector3 P(float u, float v) => new Vector3(pipeX0 + u * pipeW, pipeY0 + v * pipeH, -0.7f);
-        var pipePath = new[] { P(0.47f, 0.037f), P(0.904f, 0.037f), P(0.904f, 0.957f), P(0.093f, 0.957f), P(0.093f, 0.86f) };
+        var pipePath = new[] { P(mouthU, bottomV), P(tubeU, bottomV), P(tubeU, topV), P(exitU, topV), P(exitU, exitV) };
 
         var lineMat = new Material(Shader.Find("Sprites/Default"));
         AssetDatabase.CreateAsset(lineMat, $"{Gen}/Line.mat");
@@ -230,7 +237,13 @@ public static class BounceFusionSetup
                     result[name] = cur;
                     break;
                 case "Kd" when cur != null && parts.Length >= 4:
-                    cur.SetColor("_BaseColor", new Color(F(parts[1]), F(parts[2]), F(parts[3])));
+                    cur.SetColor("_BaseColor", new Color(F(parts[1]), F(parts[2]), F(parts[3]), cur.GetColor("_BaseColor").a));
+                    break;
+                case "d" when cur != null: // opacity: 1 = solid, 0 = invisible
+                    var c = cur.GetColor("_BaseColor");
+                    c.a = F(parts[1]);
+                    cur.SetColor("_BaseColor", c);
+                    SetTransparent(cur, c.a < 1f);
                     break;
                 case "map_Kd" when cur != null:
                     var tex = AssetDatabase.LoadAssetAtPath<Texture2D>($"{dir}/{parts[parts.Length - 1]}");
@@ -240,6 +253,21 @@ public static class BounceFusionSetup
         }
         foreach (var m in result.Values) EditorUtility.SetDirty(m);
         return result;
+    }
+
+    // URP Lit surface type switch (same properties the material inspector sets).
+    static void SetTransparent(Material m, bool on)
+    {
+        m.SetFloat("_Surface", on ? 1 : 0);
+        m.SetFloat("_Blend", 0); // alpha blend
+        m.SetFloat("_SrcBlend", (float)(on ? UnityEngine.Rendering.BlendMode.SrcAlpha : UnityEngine.Rendering.BlendMode.One));
+        m.SetFloat("_DstBlend", (float)(on ? UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha : UnityEngine.Rendering.BlendMode.Zero));
+        m.SetFloat("_SrcBlendAlpha", (float)UnityEngine.Rendering.BlendMode.One);
+        m.SetFloat("_DstBlendAlpha", (float)(on ? UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha : UnityEngine.Rendering.BlendMode.Zero));
+        m.SetFloat("_ZWrite", on ? 0 : 1);
+        m.SetOverrideTag("RenderType", on ? "Transparent" : "Opaque");
+        if (on) m.EnableKeyword("_SURFACE_TYPE_TRANSPARENT"); else m.DisableKeyword("_SURFACE_TYPE_TRANSPARENT");
+        m.renderQueue = on ? (int)UnityEngine.Rendering.RenderQueue.Transparent : -1;
     }
 
     static float F(string s) => float.Parse(s, System.Globalization.CultureInfo.InvariantCulture);

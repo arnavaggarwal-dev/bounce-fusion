@@ -26,8 +26,8 @@ public class MergeGame : MonoBehaviour
 
     [Header("Blocks")]
     public int columns = 4;
-    public float rowSpacing = 1.4f;
-    public float blockSize = 1.05f;
+    public float rowSpacing = 1.6f;
+    public float blockSize = 1.365f; // 130% of the original 1.05
     public int startRows = 2;
 
     [Header("Cannon")]
@@ -64,12 +64,26 @@ public class MergeGame : MonoBehaviour
     LineRenderer aimLine;
     Ball preview;
     Camera cam;
+    Bounds view;
+    float fitAspect;
 
     float FirstRowY => blockSize * 0.5f + 0.15f;
+
+    // Frames the camera on the scenery (frame, pipe, cannon) so it fills the screen at any aspect ratio.
+    void FitCamera()
+    {
+        fitAspect = cam.aspect;
+        cam.orthographicSize = Mathf.Max(view.extents.y, view.extents.x / cam.aspect) * 1.06f; // 6% margin, room for the HUD
+        cam.transform.position = view.center - cam.transform.forward * 20f;
+    }
 
     void Start()
     {
         cam = Camera.main;
+        var rs = FindObjectsByType<Renderer>(FindObjectsSortMode.None);
+        view = rs[0].bounds;
+        foreach (var r in rs) view.Encapsulate(r.bounds);
+        FitCamera();
         best = PlayerPrefs.GetInt("best", 0);
         bouncy = new PhysicsMaterial("bouncy") { bounciness = bounciness, dynamicFriction = 0.2f, staticFriction = 0.2f, bounceCombine = PhysicsMaterialCombine.Maximum };
 
@@ -91,6 +105,7 @@ public class MergeGame : MonoBehaviour
     void Update()
     {
         var pointer = Pointer.current;
+        if (!Mathf.Approximately(cam.aspect, fitAspect)) FitCamera(); // window resized / phone rotated
         if (state == State.Over)
         {
             if (pointer != null && pointer.press.wasPressedThisFrame)
@@ -122,8 +137,10 @@ public class MergeGame : MonoBehaviour
     void Aim()
     {
         if (Pointer.current == null) return;
-        Vector2 sp = Pointer.current.position.ReadValue();
-        Vector3 w = cam.ScreenToWorldPoint(new Vector3(sp.x, sp.y, Mathf.Abs(cam.transform.position.z)));
+        // where the pointer's ray hits the play plane z=0 (correct for a tilted or perspective camera)
+        var ray = cam.ScreenPointToRay(Pointer.current.position.ReadValue());
+        if (Mathf.Abs(ray.direction.z) < 1e-4f) return;
+        Vector3 w = ray.GetPoint(-ray.origin.z / ray.direction.z);
         Vector2 dir = (Vector2)(w - cannon.position);
         if (dir.sqrMagnitude < 0.01f) return;
         float angle = Mathf.Clamp(Vector2.SignedAngle(Vector2.down, dir), -maxAimAngle, maxAimAngle);
