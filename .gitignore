@@ -36,3 +36,5 @@
 *.unitypackage
 *.app
 '@ | Out-File -FilePath .gitignore -Encoding utf8
+bounce-fusion-itch.zip
+

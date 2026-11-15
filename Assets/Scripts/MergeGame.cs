@@ -12,11 +12,22 @@ using UnityEngine.Video;
 //  3. Balls that fall out the bottom roll into the pipe, which carries them back up to the cannon.
 //  4. When every ball is back: blocks rise one row, a new row comes up, you gain a new "2" ball.
 // A block reaching the red line = game over.
+// Progress: every level has one star (its own row, patrolling left/right, shrinking as it's hit);
+// breaking it releases extra balls. Every 20 presidents broken, a chest appears in the next row;
+// breaking it gives a key. 5 keys = next level, which brings the next (tougher) star.
 public class MergeGame : MonoBehaviour
 {
     [Header("Prefabs (built by Bounce Fusion > Build Game Scene)")]
     public GameObject ballPrefab;
     public GameObject[] blockPrefabs;
+    public GameObject starPrefab;
+    public GameObject chestPrefab;
+
+    [Header("Progress")]
+    public int chestEvery = 20;        // presidents broken per chest
+    public int keysPerLevel = 5;
+    public int starBalls = 3;          // balls released when a star breaks
+    public int starHpPerLevel = 15;    // star hit points = this * level
 
     [Header("Box")]
     public float boxWidth = 6f;
@@ -67,6 +78,10 @@ public class MergeGame : MonoBehaviour
     int inPlay;           // fired balls not yet back in the cannon (in box or in pipe)
     bool firing, pressArmed;
     int score, best, turn = 1;
+    int level = 1, keys, broken;
+    bool pendingStar = true, pendingChest; // next spawned row is a star row / gets a chest
+    string banner;
+    float bannerUntil;
     float turnStart;
     PhysicsMaterial bouncy;
     LineRenderer aimLine;
@@ -105,7 +120,8 @@ public class MergeGame : MonoBehaviour
         danger.SetPositions(new[] { new Vector3(-hw, dangerY, -0.6f), new Vector3(hw, dangerY, -0.6f) });
         aimLine = Line(new Color(1, 1, 1, 0.35f), 0.06f);
 
-        for (int r = startRows - 1; r >= 0; r--) SpawnRow(FirstRowY + r * rowSpacing, FirstRowY + r * rowSpacing);
+        // top row is the level-1 star (pendingStar), then startRows of presidents under it
+        for (int r = startRows; r >= 0; r--) SpawnRow(FirstRowY + r * rowSpacing, FirstRowY + r * rowSpacing);
         for (int i = 0; i < startBalls; i++) ammo.Add(2);
         state = State.Aiming;
 
@@ -317,8 +333,27 @@ public class MergeGame : MonoBehaviour
             if (b.targetY + blockSize * 0.5f > dangerY) { EndGame(); break; }
     }
 
+    Block SpawnTarget(GameObject prefab, Vector3 pos, float targetY, int hp, float size)
+    {
+        var go = Instantiate(prefab, pos, Quaternion.identity);
+        go.transform.localScale = Vector3.one * size;
+        foreach (var col in go.GetComponentsInChildren<Collider>()) col.sharedMaterial = bouncy;
+        var b = go.GetComponent<Block>();
+        b.targetY = targetY;
+        b.SetHp(hp);
+        blocks.Add(b);
+        return b;
+    }
+
     void SpawnRow(float y, float targetY)
     {
+        if (pendingStar && starPrefab != null) // the level's star gets a row to itself
+        {
+            pendingStar = false;
+            var star = SpawnTarget(starPrefab, new Vector3(0, y, 0), targetY, starHpPerLevel * level, blockSize * 1.1f);
+            star.patrolRange = boxWidth / 2f - blockSize * 0.55f;
+            return;
+        }
         float colW = boxWidth / columns;
         var free = new List<int>();
         for (int c = 0; c < columns; c++) free.Add(c);
@@ -329,13 +364,13 @@ public class MergeGame : MonoBehaviour
             int c = free[k];
             free.RemoveAt(k);
             var pos = new Vector3(-boxWidth / 2f + colW * (c + 0.5f), y, 0);
-            var go = Instantiate(blockPrefabs[Random.Range(0, blockPrefabs.Length)], pos, Quaternion.identity);
-            go.transform.localScale = Vector3.one * blockSize;
-            foreach (var col in go.GetComponentsInChildren<Collider>()) col.sharedMaterial = bouncy;
-            var b = go.GetComponent<Block>();
-            b.targetY = targetY;
-            b.SetHp(turn * Random.Range(1, 4) + 2);
-            blocks.Add(b);
+            if (pendingChest && chestPrefab != null) // first slot of the row becomes the chest
+            {
+                pendingChest = false;
+                SpawnTarget(chestPrefab, pos, targetY, Mathf.Max(3, turn), blockSize);
+                continue;
+            }
+            SpawnTarget(blockPrefabs[Random.Range(0, blockPrefabs.Length)], pos, targetY, turn * Random.Range(1, 4) + 2, blockSize);
         }
     }
 
@@ -344,11 +379,41 @@ public class MergeGame : MonoBehaviour
         if (state == State.Over || ball.merged || block.hp <= 0) return;
         score += Mathf.Min(ball.value, block.hp);
         block.SetHp(block.hp - ball.value);
-        if (block.hp <= 0)
+        if (block.hp > 0) return;
+        var at = block.transform.position;
+        blocks.Remove(block);
+        Destroy(block.gameObject);
+        switch (block.kind)
         {
-            blocks.Remove(block);
-            Destroy(block.gameObject);
+            case Block.Kind.President:
+                if (++broken % chestEvery == 0) pendingChest = true;
+                break;
+            case Block.Kind.Star: // burst of new balls; they join your stock via the pipe like any other
+                for (int i = 0; i < starBalls; i++)
+                {
+                    var nb = SpawnBall(2, at + (Vector3)(Random.insideUnitCircle * 0.3f), track: true);
+                    nb.GetComponent<Rigidbody>().linearVelocity = new Vector3(Random.Range(-4f, 4f), Random.Range(2f, 6f), 0);
+                    inPlay++;
+                }
+                Banner($"+{starBalls} BALLS");
+                break;
+            case Block.Kind.Chest:
+                if (++keys >= keysPerLevel)
+                {
+                    keys = 0;
+                    level++;
+                    pendingStar = true; // the new level's star comes up with the next row
+                    Banner($"LEVEL {level}!");
+                }
+                else Banner($"KEY {keys}/{keysPerLevel}");
+                break;
         }
+    }
+
+    void Banner(string text)
+    {
+        banner = text;
+        bannerUntil = Time.time + 1.5f;
     }
 
     public void Merge(Ball a, Ball b)
@@ -419,7 +484,13 @@ public class MergeGame : MonoBehaviour
             GUI.Label(new Rect(0, 0, Screen.width - 10, Screen.height - 10), introStarted ? "tap to skip" : "TAP TO PLAY", s);
             return;
         }
-        GUI.Label(new Rect(0, 10, Screen.width, Screen.height / 10f), $"{score}   best {best}   turn {turn}   balls x{ammo.Count + inPlay}", s);
+        GUI.Label(new Rect(0, 10, Screen.width, Screen.height / 10f), $"{score}   best {best}   lvl {level}   keys {keys}/{keysPerLevel}   balls x{ammo.Count + inPlay}", s);
+        if (Time.time < bannerUntil && state != State.Over)
+        {
+            var b = new GUIStyle(s) { alignment = TextAnchor.MiddleCenter, fontSize = Screen.height / 14 };
+            b.normal.textColor = new Color(1f, 0.85f, 0.3f);
+            GUI.Label(new Rect(0, 0, Screen.width, Screen.height * 0.6f), banner, b);
+        }
         if (state == State.Over)
         {
             s.alignment = TextAnchor.MiddleCenter;

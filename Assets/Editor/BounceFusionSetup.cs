@@ -56,19 +56,29 @@ public static class BounceFusionSetup
             if (AssetImporter.GetAtPath(Presidents[i].obj) is ModelImporter imp && !imp.isReadable) { imp.isReadable = true; imp.SaveAndReimport(); }
             var root = new GameObject($"Block_{Path.GetFileNameWithoutExtension(Presidents[i].obj)}");
             var blockModel = Model(Presidents[i].obj, root.transform, Presidents[i].euler);
-            Normalize(blockModel, Vector3.one, Vector3.zero, uniform: true);
-            foreach (var mf in root.GetComponentsInChildren<MeshFilter>())
-                mf.gameObject.AddComponent<MeshCollider>().convex = true;
-            var rb = root.AddComponent<Rigidbody>();
-            rb.isKinematic = true;
-            rb.interpolation = RigidbodyInterpolation.Interpolate;
-            var block = root.AddComponent<Block>();
-            block.model = blockModel.transform; // spun by Block; the label is a sibling so it stays upright
-            block.label = Label(root.transform, new Vector3(0, -0.28f, -0.8f), 0.06f, Color.white);
-            block.label.text = "1";
-            blockPrefabs[i] = PrefabUtility.SaveAsPrefabAsset(root, $"{Gen}/{root.name}.prefab");
-            Object.DestroyImmediate(root);
+            blockPrefabs[i] = SaveTarget(root, blockModel, Block.Kind.President, new Vector3(0, -0.28f, -0.8f), Color.white);
         }
+
+        // Star and chest: stand-in shapes made in code. To use your own model instead, replace the
+        // GameObject passed as `model` with Model("Assets/3d/yourmodel.obj", root.transform, Vector3.zero).
+        var gold = Mat("Gold", new Color(1f, 0.78f, 0.15f), 0.75f);
+        var starRoot = new GameObject("Star");
+        var starModel = new GameObject("StarModel");
+        starModel.transform.SetParent(starRoot.transform, false);
+        starModel.AddComponent<MeshFilter>().sharedMesh = StarMesh();
+        starModel.AddComponent<MeshRenderer>().sharedMaterial = gold;
+        var starPrefab = SaveTarget(starRoot, starModel, Block.Kind.Star, new Vector3(0, -0.04f, -0.6f), new Color(0.3f, 0.15f, 0f));
+
+        var chestRoot = new GameObject("Chest");
+        var chestModel = new GameObject("ChestModel");
+        chestModel.transform.SetParent(chestRoot.transform, false);
+        var wood = Mat("Wood", new Color(0.55f, 0.3f, 0.12f), 0.2f);
+        var woodDark = Mat("WoodDark", new Color(0.4f, 0.2f, 0.07f), 0.2f);
+        Cube(chestModel.transform, new Vector3(0, -0.15f, 0), new Vector3(1f, 0.6f, 0.7f), wood);        // body
+        Cube(chestModel.transform, new Vector3(0, 0.28f, 0), new Vector3(1.04f, 0.28f, 0.74f), woodDark); // lid
+        Cube(chestModel.transform, new Vector3(0, 0.12f, 0), new Vector3(1.06f, 0.07f, 0.76f), gold);     // band
+        Cube(chestModel.transform, new Vector3(0, 0.08f, -0.38f), new Vector3(0.2f, 0.24f, 0.08f), gold); // lock
+        var chestPrefab = SaveTarget(chestRoot, chestModel, Block.Kind.Chest, new Vector3(0, -0.2f, -0.8f), Color.white);
 
         // Ball: unit sphere collider, rotation frozen so the number stays upright.
         var ballMat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
@@ -136,6 +146,8 @@ public static class BounceFusionSetup
         var gm = new GameObject("Game").AddComponent<MergeGame>();
         gm.ballPrefab = ballPrefab;
         gm.blockPrefabs = blockPrefabs;
+        gm.starPrefab = starPrefab;
+        gm.chestPrefab = chestPrefab;
         gm.cannon = cannon.transform;
         gm.muzzleDistance = 1.9f;
         gm.boxWidth = BoxW;
@@ -161,6 +173,76 @@ public static class BounceFusionSetup
         EditorBuildSettings.scenes = list.ToArray();
         AssetDatabase.SaveAssets();
         Debug.Log("Bounce Fusion scene built. Press Play.");
+    }
+
+    // Turns root (with `model` as a child) into a target prefab: unit-sized model, convex colliders,
+    // kinematic body, Block component and a hit-point label.
+    static GameObject SaveTarget(GameObject root, GameObject model, Block.Kind kind, Vector3 labelPos, Color labelColor)
+    {
+        Normalize(model, Vector3.one, Vector3.zero, uniform: true);
+        foreach (var mf in root.GetComponentsInChildren<MeshFilter>())
+            if (!mf.GetComponent<Collider>()) mf.gameObject.AddComponent<MeshCollider>().convex = true;
+        var rb = root.AddComponent<Rigidbody>();
+        rb.isKinematic = true;
+        rb.interpolation = RigidbodyInterpolation.Interpolate;
+        var block = root.AddComponent<Block>();
+        block.kind = kind;
+        block.model = model.transform; // turned by Block; the label is a sibling so it stays upright
+        block.label = Label(root.transform, labelPos, 0.06f, labelColor);
+        block.label.text = "1";
+        var prefab = PrefabUtility.SaveAsPrefabAsset(root, $"{Gen}/{root.name}.prefab");
+        Object.DestroyImmediate(root);
+        return prefab;
+    }
+
+    static Material Mat(string name, Color color, float smoothness)
+    {
+        var m = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+        m.SetColor("_BaseColor", color);
+        m.SetFloat("_Smoothness", smoothness);
+        AssetDatabase.CreateAsset(m, $"{Gen}/{name}.mat");
+        return m;
+    }
+
+    static void Cube(Transform parent, Vector3 pos, Vector3 size, Material mat)
+    {
+        var c = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        c.transform.SetParent(parent, false);
+        c.transform.localPosition = pos;
+        c.transform.localScale = size;
+        c.GetComponent<Renderer>().sharedMaterial = mat;
+    }
+
+    // Flat-shaded 5-point star, 1 unit across, 0.3 deep, facing -Z (the camera).
+    static Mesh StarMesh()
+    {
+        const int n = 10; const float outer = 0.5f, inner = 0.22f, d = 0.15f;
+        Vector3 P(int i, float z)
+        {
+            float r = i % 2 == 0 ? outer : inner, a = Mathf.PI / 2f + i * Mathf.PI * 2f / n;
+            return new Vector3(Mathf.Cos(a) * r, Mathf.Sin(a) * r, z);
+        }
+        var v = new List<Vector3>();
+        var t = new List<int>();
+        for (int i = 0; i < n; i++) // front and back fans (own vertices so faces stay flat-shaded)
+        {
+            int k = v.Count;
+            v.AddRange(new[] { new Vector3(0, 0, -d), P(i + 1, -d), P(i, -d), new Vector3(0, 0, d), P(i, d), P(i + 1, d) });
+            t.AddRange(new[] { k, k + 1, k + 2, k + 3, k + 4, k + 5 });
+        }
+        for (int i = 0; i < n; i++) // sides
+        {
+            int k = v.Count;
+            v.AddRange(new[] { P(i, -d), P(i + 1, -d), P(i + 1, d), P(i, d) });
+            t.AddRange(new[] { k, k + 1, k + 2, k, k + 2, k + 3 });
+        }
+        var mesh = new Mesh { name = "Star" };
+        mesh.SetVertices(v);
+        mesh.SetTriangles(t, 0);
+        mesh.RecalculateNormals();
+        mesh.RecalculateBounds();
+        AssetDatabase.CreateAsset(mesh, $"{Gen}/StarMesh.asset");
+        return mesh;
     }
 
     // The pipe's exit stub is the only geometry at ~83-89% of its height; tells which side it's on.
